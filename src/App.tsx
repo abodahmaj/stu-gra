@@ -7,13 +7,13 @@ import React, { useState, useEffect, useRef } from 'react';
 import {
   User, ArrowLeft, PieChart, Layers, Trophy, Crown, X, BarChart as BarChartIcon,
   Quote, Send, Download, Home, Printer, Search, Pointer, FolderOpen,
-  BarChart2, Star, AlertTriangle, Medal, Activity, Mail
+  BarChart2, Star, AlertTriangle, Medal, Activity, Mail, ChevronDown, ChevronUp
 } from 'lucide-react';
 import {
   Chart as ChartJS, CategoryScale, LinearScale, BarElement, Title, Tooltip, Legend
 } from 'chart.js';
 import { Bar } from 'react-chartjs-2';
-import html2canvas from 'html2canvas';
+import { toPng } from 'html-to-image';
 import { supabase } from './lib/supabase';
 
 ChartJS.register(CategoryScale, LinearScale, BarElement, Title, Tooltip, Legend);
@@ -75,6 +75,7 @@ function getLevel(score: number) {
 export default function App() {
   const [allStudents, setAllStudents] = useState<Student[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [loadingProgress, setLoadingProgress] = useState(0);
   const [view, setView] = useState<'landing' | 'app' | 'admin_login' | 'admin_dashboard'>('landing');
   const [selectedGrade, setSelectedGrade] = useState<string>('');
   const [activeTab, setActiveTab] = useState<'results' | 'global' | 'honor' | 'weakness'>('results');
@@ -98,6 +99,23 @@ export default function App() {
   
   const [showConfirmDialog, setShowConfirmDialog] = useState(false);
   const [confirmAction, setConfirmAction] = useState<'save' | 'discard' | null>(null);
+
+  const [showWelcome, setShowWelcome] = useState(true);
+  const [isMetricsExpanded, setIsMetricsExpanded] = useState(false);
+
+  useEffect(() => {
+    if (selectedStudent) {
+      setIsMetricsExpanded(false);
+    }
+  }, [selectedStudent]);
+
+  useEffect(() => {
+    if (view === 'landing') {
+      setShowWelcome(true);
+      const timer = setTimeout(() => setShowWelcome(false), 4000);
+      return () => clearTimeout(timer);
+    }
+  }, [view]);
 
   const hasUnsavedChanges = adminData 
     ? (newCsvUrl !== adminData.csv_url || newAdminUsername !== adminData.admin_username || newAdminPassword !== adminData.admin_password)
@@ -123,7 +141,33 @@ export default function App() {
         
         const response = await fetch(currentCsvUrl);
         if (!response.ok) throw new Error("Network response was not ok");
-        const text = await response.text();
+        
+        const contentLength = response.headers.get('content-length');
+        const total = contentLength ? parseInt(contentLength, 10) : 0;
+        let loaded = 0;
+        
+        const reader = response.body?.getReader();
+        const decoder = new TextDecoder('utf-8');
+        let text = '';
+        
+        if (reader) {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            loaded += value.length;
+            text += decoder.decode(value, { stream: true });
+            if (total) {
+              setLoadingProgress(Math.round((loaded / total) * 100));
+            } else {
+              setLoadingProgress(prev => Math.min(prev + 10, 90));
+            }
+          }
+          text += decoder.decode(); // flush
+        } else {
+          text = await response.text();
+        }
+        
+        setLoadingProgress(100);
         const parsed = parseCSV(text);
         setAllStudents(parsed);
       } catch (err) {
@@ -264,17 +308,19 @@ export default function App() {
       const actionButtons = element.querySelector('.no-print-card') as HTMLElement;
       if (actionButtons) actionButtons.style.display = 'none';
 
-      html2canvas(element, { scale: 2, backgroundColor: "#ffffff", useCORS: true }).then(canvas => {
-        if (actionButtons) actionButtons.style.display = 'flex';
-        const link = document.createElement('a');
-        link.download = `نتيجة_${selectedStudent.name}.png`;
-        link.href = canvas.toDataURL();
-        link.click();
-      }).catch(e => {
-        console.error("Capture failed:", e);
-        alert("تعذر حفظ الصورة، يرجى المحاولة مرة أخرى.");
-        if (actionButtons) actionButtons.style.display = 'flex';
-      });
+      toPng(element, { backgroundColor: "#ffffff", pixelRatio: 2 })
+        .then(dataUrl => {
+          if (actionButtons) actionButtons.style.display = 'flex';
+          const link = document.createElement('a');
+          link.download = `نتيجة_${selectedStudent.name}.png`;
+          link.href = dataUrl;
+          link.click();
+        })
+        .catch(e => {
+          console.error("Capture failed:", e);
+          alert("تعذر حفظ الصورة، يرجى المحاولة مرة أخرى.");
+          if (actionButtons) actionButtons.style.display = 'flex';
+        });
     }
   };
 
@@ -297,7 +343,15 @@ export default function App() {
         <div className="bg-white p-8 border-2 border-black paper-shadow flex flex-col items-center max-w-sm w-full animate-slide-up">
           <div className="w-16 h-16 border-4 border-gray-200 border-t-black rounded-full animate-spin mb-6"></div>
           <h2 className="text-xl font-black text-black mb-2">جاري تحميل البيانات...</h2>
-          <p className="text-sm text-gray-600 font-bold text-center">يرجى الانتظار بينما نقوم بجلب وتحليل بيانات الطلاب</p>
+          <p className="text-sm text-gray-600 font-bold text-center mb-4">يرجى الانتظار بينما نقوم بجلب وتحليل بيانات الطلاب</p>
+          
+          <div className="w-full bg-gray-200 border-2 border-black h-4 relative overflow-hidden" dir="ltr">
+            <div 
+              className="bg-paper-green h-full border-r-2 border-black transition-all duration-300 ease-out"
+              style={{ width: `${loadingProgress}%` }}
+            ></div>
+          </div>
+          <p className="text-xs font-bold mt-2 text-black">{loadingProgress}%</p>
         </div>
       </div>
     );
@@ -310,8 +364,14 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-pattern text-slate-900 overflow-x-hidden">
-      {view === 'landing' && (
+      <div className="print:hidden">
+        {view === 'landing' && (
         <div className="fixed inset-0 z-50 bg-white flex flex-col overflow-y-auto overflow-x-hidden bg-pattern">
+          {showWelcome && (
+            <div className="absolute top-6 left-1/2 -translate-x-1/2 z-[60] bg-paper-yellow border-2 border-black px-6 py-3 paper-shadow animate-slide-up text-center w-max max-w-[90%] transition-opacity duration-500">
+              <p className="font-black text-black text-sm">أهلاً بك في نظام كشوف المتابعة!</p>
+            </div>
+          )}
           <button onClick={() => setView('admin_login')} className="absolute top-4 left-4 z-20 w-10 h-10 bg-white border-2 border-black flex items-center justify-center text-black paper-btn shadow-none">
             <User size={18} />
           </button>
@@ -387,9 +447,13 @@ export default function App() {
                   <span className="text-[10px] bg-paper-yellow text-black px-2 py-0.5 border-2 border-black font-bold">بوابة النتائج</span>
                 </div>
               </div>
-              <button onClick={() => window.print()} className="w-10 h-10 bg-white border-2 border-black flex items-center justify-center text-black paper-btn shadow-none">
-                <Printer size={18} />
-              </button>
+              <div className="flex items-center gap-2">
+                {selectedGrade !== 'التحليل الشامل' && (
+                  <button onClick={() => window.print()} className="h-10 px-3 bg-white border-2 border-black flex items-center justify-center text-black paper-btn shadow-none gap-2 font-bold text-xs">
+                    <Printer size={16} /> <span className="hidden sm:inline">طباعة الكل</span>
+                  </button>
+                )}
+              </div>
             </div>
             <div className="flex px-4 overflow-x-auto no-scrollbar gap-3 pb-3 pt-2 bg-gray-100 border-b-2 border-black">
               {selectedGrade !== 'التحليل الشامل' && (
@@ -582,8 +646,8 @@ export default function App() {
             <div className="fixed inset-0 bg-black/80 backdrop-blur-sm transition-opacity" onClick={() => setSelectedStudent(null)}></div>
             
             <div className="inline-block w-full max-w-sm p-4 my-8 transition-all relative z-50">
-              <div className="bg-white paper-card relative" ref={cardRef}>
-                <button onClick={() => setSelectedStudent(null)} className="absolute top-4 left-4 z-20 w-8 h-8 bg-white border-2 border-black text-black flex items-center justify-center hover:bg-red-500 hover:text-white no-print-card"><X size={16} /></button>
+              <div className="bg-white paper-card relative cursor-pointer" ref={cardRef} onClick={() => setIsMetricsExpanded(!isMetricsExpanded)}>
+                <button onClick={(e) => { e.stopPropagation(); setSelectedStudent(null); }} className="absolute top-4 left-4 z-20 w-8 h-8 bg-white border-2 border-black text-black flex items-center justify-center hover:bg-red-500 hover:text-white no-print-card"><X size={16} /></button>
 
                 <div className="bg-paper-green pt-10 pb-16 px-6 text-black text-center relative border-b-2 border-black">
                   <div className="w-24 h-24 mx-auto bg-white flex items-center justify-center text-4xl font-black text-black mb-4 border-2 border-black shadow-[4px_4px_0_0_black] relative z-10">{selectedStudent.name.charAt(0)}</div>
@@ -608,8 +672,18 @@ export default function App() {
                   <div className="mb-8">
                     <div className="flex justify-between items-end mb-3 px-2 border-b-2 border-black pb-1">
                       <h4 className="text-xs font-bold text-black flex items-center gap-1"><BarChartIcon size={14} /> تحليل الأداء</h4>
+                      <div className="text-gray-500">
+                        {isMetricsExpanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+                      </div>
                     </div>
-                    <div className="relative h-40 w-full bg-white p-4 border-2 border-black shadow-[2px_2px_0_0_black]">
+                    
+                    <div 
+                      className={`relative w-full bg-white border-black transition-all duration-300 ease-in-out overflow-hidden ${
+                        isMetricsExpanded 
+                          ? 'h-40 p-4 border-2 shadow-[2px_2px_0_0_black] opacity-100 mt-2' 
+                          : 'h-0 p-0 border-0 shadow-none opacity-0 mt-0'
+                      }`}
+                    >
                       <StudentChart student={selectedStudent} allStudents={allStudents} />
                     </div>
                   </div>
@@ -634,7 +708,7 @@ export default function App() {
                     <span>تاريخ الإصدار: {new Date().toLocaleDateString('ar-SA')}</span>
                   </div>
 
-                  <div className="flex gap-2 no-print-card">
+                  <div className="flex gap-2 no-print-card" onClick={(e) => e.stopPropagation()}>
                     <button onClick={shareViaWhatsapp} className="flex-1 bg-paper-green hover:bg-brand-600 text-white font-bold py-3 paper-btn shadow-none flex items-center justify-center gap-2 text-sm border-2 border-black">
                       <Send size={16} /> واتساب
                     </button>
@@ -801,6 +875,70 @@ export default function App() {
           </div>
         </div>
       )}
+      </div>
+
+      {/* Print View */}
+      <div className="hidden print:block bg-white w-full">
+        {view === 'app' && selectedGrade !== 'التحليل الشامل' && classStudents.map(student => (
+          <PrintableStudentCard key={student.name} student={student} allStudents={allStudents} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function PrintableStudentCard({ student, allStudents }: { student: Student, allStudents: Student[] }) {
+  return (
+    <div className="bg-white relative break-after-page mb-8 print:shadow-none print:border-0 print:mb-0 w-full max-w-2xl mx-auto" style={{ pageBreakAfter: 'always' }}>
+      <div className="bg-paper-green pt-10 pb-16 px-6 text-black text-center relative border-b-2 border-black">
+        <div className="w-24 h-24 mx-auto bg-white flex items-center justify-center text-4xl font-black text-black mb-4 border-2 border-black shadow-[4px_4px_0_0_black] print:shadow-none relative z-10">{student.name.charAt(0)}</div>
+        <h2 className="text-2xl font-black mb-1 relative z-10 truncate px-2">{student.name}</h2>
+        <span className="text-xs bg-white px-4 py-1.5 font-bold border-2 border-black relative z-10">{student.grade}</span>
+      </div>
+
+      <div className="bg-white relative z-20 px-6 pt-8 pb-6 border-2 border-t-0 border-black">
+        <div className="text-center mb-8">
+          <div className="inline-flex flex-col items-center">
+            <span className="text-xs text-black font-black uppercase tracking-widest mb-1 underline decoration-2">المجموع الكلي</span>
+            <div className="flex items-baseline gap-1">
+              <span className="text-6xl font-black text-black tracking-tighter">{student.total}</span>
+              <span className="text-xl text-gray-500 font-bold">/60</span>
+            </div>
+            <div className={`mt-2 px-4 py-1 text-xs font-bold border-2 border-black bg-white shadow-[2px_2px_0_0_black] print:shadow-none ${getLevel(student.total).text}`}>
+              {getLevel(student.total).label}
+            </div>
+          </div>
+        </div>
+
+        <div className="mb-8">
+          <div className="flex justify-between items-end mb-3 px-2 border-b-2 border-black pb-1">
+            <h4 className="text-xs font-bold text-black flex items-center gap-1"><BarChartIcon size={14} /> تحليل الأداء</h4>
+          </div>
+          <div className="relative h-40 w-full bg-white p-4 border-2 border-black shadow-[2px_2px_0_0_black] print:shadow-none">
+            <StudentChart student={student} allStudents={allStudents} />
+          </div>
+        </div>
+
+        <div className="bg-gray-100 p-5 border-2 border-black mb-6">
+          <div className="flex gap-3">
+            <div className="w-8 h-8 bg-white flex items-center justify-center text-black border-2 border-black shrink-0"><Quote size={14} /></div>
+            <div>
+              <h5 className="text-xs font-bold text-black mb-1">رأي المعلم:</h5>
+              <p className="text-xs text-black leading-relaxed font-medium">
+                {student.total >= 54 ? "أداء استثنائي! استمر في هذا التميز." :
+                 student.tests < 10 ? "يحتاج الطالب إلى تركيز أكبر على المذاكرة للاختبارات." :
+                 student.tasks < 15 ? "يرجى الاهتمام بتسليم المهام والمشاركة الصفية." :
+                 "مستوى جيد، يمكن الوصول لمراتب التميز بقليل من الجهد."}
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div className="flex justify-between items-center mb-2 px-2 text-[10px] font-bold text-gray-500">
+          <span>الصف: {student.grade}</span>
+          <span>تاريخ الإصدار: {new Date().toLocaleDateString('ar-SA')}</span>
+        </div>
+      </div>
     </div>
   );
 }
@@ -837,6 +975,7 @@ function StudentChart({ student, allStudents }: { student: Student, allStudents:
     indexAxis: 'y' as const,
     responsive: true,
     maintainAspectRatio: false,
+    animation: false,
     scales: {
       x: { beginAtZero: true, grid: { display: false }, ticks: { font: { family: 'Tajawal' }, color: '#000' } },
       y: { grid: { display: false }, ticks: { font: { family: 'Tajawal', weight: 'bold' as const }, color: '#000' } }
